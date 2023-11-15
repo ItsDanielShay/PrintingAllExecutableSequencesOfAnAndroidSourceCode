@@ -1,0 +1,42 @@
+<!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
+<idea-plugin>
+    <!-- Unique identifier of the plugin. It should be FQN. It cannot be changed between the plugin versions. -->
+    <id>com.example.CustomOverwrittenIdentifier</id>
+
+    <!-- Public plugin name should be written in Title Case.
+         Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-name -->
+    <name>Overwritten Callback Functions Identifier</name>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>com.intellij.java</depends>
+
+    <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
+    <vendor email="dfarkhonde@gmail.com" url="https://www.danielfarkhonde.com">Danial FarkhondeShaye</vendor>
+
+    <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
+         Simple HTML elements (text formatting, paragraphs, and lists) can be added inside of <![CDATA[ ]]> tag.
+         Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-description -->
+    <description>
+        This plugin finds out all the callback functions overwritten by the developers (e.g., onClick()).
+    </description>
+
+    <actions>
+        <group
+                id="FindCallbackFunctions"
+                description="This plugin finds out all the callback functions overwritten by the developers (e.g., onClick()).">
+            <action
+                    id="com.example.customoverwrittenidentifier.FindCallbackFunctions"
+                    class="com.example.customoverwrittenidentifier.FindCallbackFunctions"
+                    text="Find Overwritten Callback Functions"
+                    description="This plugin finds out all the callback functions overwritten by the developers (e.g., onClick())."/>
+
+            <add-to-group group-id="ToolsMenu" anchor="first"/>
+        </group>
+    </actions>
+
+    <!-- Extension points defined by the plugin.
+         Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
+    <extensions defaultExtensionNs="com.intellij">
+
+    </extensions>
+</idea-plugin>
