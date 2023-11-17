@@ -3,20 +3,21 @@ package com.example.customoverwrittenidentifier;
 import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.CommonDataKeys;
-import com.intellij.openapi.editor.Document;
 import com.intellij.openapi.editor.Editor;
 import com.intellij.openapi.project.Project;
 import com.intellij.openapi.ui.Messages;
 import com.intellij.psi.*;
 import com.intellij.psi.search.GlobalSearchScope;
 import com.intellij.psi.search.searches.AllClassesSearch;
+import com.intellij.psi.util.PsiTreeUtil;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.*;
 import java.util.stream.Collectors;
 
 public class FindCallbackFunctions extends AnAction {
 
+    // List to store method call sequences
+    List<String> methodCalls = new ArrayList<>();
 
     @Override
     public void actionPerformed(AnActionEvent anActionEvent) {
@@ -25,66 +26,96 @@ public class FindCallbackFunctions extends AnAction {
         Editor editor = anActionEvent.getData(CommonDataKeys.EDITOR);
         PsiFile psiFile = anActionEvent.getData(CommonDataKeys.PSI_FILE);
 
-        // Check if both editor and PSI file are available
+        // Check if the editor and PSI file are available
         if (editor == null || psiFile == null) {
             return;
         }
 
-        // Create a list to store all overwritten callback functions
-        List<String> overwrittenCallbacks = new ArrayList<>();
+        // Search for all classes in the project and analyze their methods
+        AllClassesSearch.search(GlobalSearchScope.projectScope(Objects.requireNonNull(editor.getProject())), editor.getProject()).forEach(psiClass -> {
 
-        // Perform a global search for all classes in the project
-        AllClassesSearch.search(GlobalSearchScope.projectScope(editor.getProject()), editor.getProject()).forEach(psiClass -> {
+            // Iterate through methods of each class and analyze the call graph using "printTree" function
+            Arrays.asList(psiClass.getMethods()).forEach(psiMethod -> printTree(psiMethod, editor.getProject().getBasePath(), null, 0));
 
-            // Visit each class and its methods
-            psiClass.accept(new JavaRecursiveElementVisitor() {
-                @Override
-                public void visitMethod(PsiMethod method) {
-                    super.visitMethod(method);
-
-                    // Check if the method is annotated with @Override
-                    if (method.getAnnotation("java.lang.Override") != null) {
-
-                        // Check if the method is located in the "main" directory
-                        if (method.getContainingFile().getVirtualFile().getPath().contains("/main/")) {
-
-                            // Get the document of the containing file
-                            Document document = PsiDocumentManager.getInstance(editor.getProject()).getDocument(method.getContainingFile());
-
-                            // Get the offset and line number of the method
-                            int offset = method.getTextOffset();
-                            int lineNumber = document.getLineNumber(offset) + 1;
-
-                            // Add the method information to the list
-                            overwrittenCallbacks.add("Method name: " + method.getName()
-                                    + " | Line: " + lineNumber + " | Path: "
-                                    + method.getContainingFile().getVirtualFile().getPath());
-                        }
-                    }
-                }
-            });
-            // Return true to continue iterating through classes
             return true;
         });
 
-        // Collect unique overwritten callback functions
-        List<String> uniqueList = overwrittenCallbacks.stream().distinct().collect(Collectors.toList());
+        // Remove redundant from the list of all possible method call sequences
+        List<String> uniqueList = methodCalls.stream().distinct().collect(Collectors.toList());
 
-        // Display the dialog box with the list of overwritten functions
+        // Display the results in a dialog
         showOverwrittenFunctionsDialog(editor.getProject(), uniqueList);
     }
 
-    private void showOverwrittenFunctionsDialog(Project project, List<String> overwrittenCallbacks) {
-        String title = "Overwritten functions";
+    /**
+     * Recursively traverses the call graph of a method and records call sequences.
+     *
+     * @param psiMethod          The method to analyze.
+     * @param basePath           The base path of the project.
+     * @param parentStringBuilder The StringBuilder representing the parent method in the call sequence.
+     * @param depth              The depth of the recursion.
+     */
+    private void printTree(PsiMethod psiMethod, String basePath, StringBuilder parentStringBuilder, int depth) {
 
-        // Construct the message with all the overwritten callback functions
-        StringBuilder message = new StringBuilder("All the callback functions overwritten by the developers:\n\n");
+        // Check if the method is within the project's base path and the recursion depth is within limits
+        if (psiMethod.getContainingFile().getVirtualFile().getPath().startsWith(basePath) && depth < 50) {
+
+            // Check if the method is annotated with @Override or is part of an overridden sequence
+            PsiAnnotation overrideAnnotation = psiMethod.getModifierList().findAnnotation("java.lang.Override");
+            if (overrideAnnotation != null || parentStringBuilder != null) {
+                PsiCodeBlock body = psiMethod.getBody();
+                if (body != null) {
+
+                    // Retrieve statements from the method body
+                    PsiStatement[] statements = body.getStatements();
+
+                    // Iterate through statements to find method calls
+                    for (PsiStatement statement : statements) {
+
+                        // Find method call expressions in the statement
+                        Collection<PsiMethodCallExpression> methodCallExpressions =
+                                PsiTreeUtil.findChildrenOfType(statement, PsiMethodCallExpression.class);
+                        for (PsiMethodCallExpression methodCallExpression : methodCallExpressions) {
+                            String lastMethod;
+                            if (parentStringBuilder == null)
+                                lastMethod = psiMethod.getName();
+                            else
+                                lastMethod = parentStringBuilder.toString();
+                            StringBuilder stringBuilder = new StringBuilder(lastMethod);
+
+                            String methodName = methodCallExpression.getMethodExpression().getReferenceName();
+                            if (methodName != null) {
+                                stringBuilder.append(" --> ").append(methodName);
+                            }
+                            // Recursively analyze the called method
+                            printTree(Objects.requireNonNull(methodCallExpression.resolveMethod()), basePath, stringBuilder, depth + 1);
+                        }
+                    }
+                }
+            }
+        } else {
+            // Record the method call sequence and print a debug message
+            methodCalls.add(parentStringBuilder.toString());
+            System.out.println("Method call within @Override method: " + parentStringBuilder);
+        }
+    }
+
+    /**
+     * Displays a dialog with the identified overwritten callback functions and their call sequences.
+     *
+     * @param project             The project context.
+     * @param overwrittenCallbacks List of overwritten callback functions and their call sequences.
+     */
+    private void showOverwrittenFunctionsDialog(Project project, List<String> overwrittenCallbacks) {
+        String title = "All the Possible Call Sequences";
+
+        StringBuilder message = new StringBuilder("Number of sequences: " + overwrittenCallbacks.size() + "\n\n");
 
         for (String callback : overwrittenCallbacks) {
             message.append(callback).append("\n").append("---------------------").append("\n");
         }
 
-        // Show the message dialog with the list of overwritten functions
+        // Display the dialog with the results
         Messages.showMessageDialog(project, message.toString(), title, Messages.getInformationIcon());
     }
 
@@ -93,7 +124,6 @@ public class FindCallbackFunctions extends AnAction {
         Editor editor = e.getData(CommonDataKeys.EDITOR);
         PsiFile psiFile = e.getData(CommonDataKeys.PSI_FILE);
 
-        // Enable the action only if both editor and PSI file are available
         e.getPresentation().setEnabled(editor != null && psiFile != null);
     }
 }

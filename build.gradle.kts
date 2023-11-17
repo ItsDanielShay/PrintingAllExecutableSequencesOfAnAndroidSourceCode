@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.example"
-version = "1.0"
+version = "1.1"
 
 repositories {
     mavenCentral()
@@ -17,7 +17,7 @@ dependencies {
 // Configure Gradle IntelliJ Plugin
 // Read more: https://plugins.jetbrains.com/docs/intellij/tools-gradle-intellij-plugin.html
 intellij {
-    version.set("2022.1.4")
+    version.set("2021.2.1")
     type.set("IC") // Target IDE Platform
 
     plugins.set(listOf("com.intellij.java"))
@@ -34,7 +34,7 @@ tasks {
     }
 
     patchPluginXml {
-        sinceBuild.set("221")
+        sinceBuild.set("211")
         untilBuild.set("232.*")
     }
 

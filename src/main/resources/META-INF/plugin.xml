@@ -5,7 +5,7 @@
 
     <!-- Public plugin name should be written in Title Case.
          Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-name -->
-    <name>Overwritten Callback Functions Identifier</name>
+    <name>Call Sequences of Overridden Callbacks Identifier</name>
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.java</depends>
@@ -17,18 +17,18 @@
          Simple HTML elements (text formatting, paragraphs, and lists) can be added inside of <![CDATA[ ]]> tag.
          Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-description -->
     <description>
-        This plugin finds out all the callback functions overwritten by the developers (e.g., onClick()).
+        This plugin finds all the possible call sequences for each overwritten callback. For example, onClick() may call calc1(), which may further call calc2(), so one call sequence is onClick()-->calc1()-->calc2().
     </description>
 
     <actions>
         <group
-                id="FindCallbackFunctions"
-                description="This plugin finds out all the callback functions overwritten by the developers (e.g., onClick()).">
+                id="FindAllThePossibleCallSequences"
+                description="This plugin finds all the possible call sequences for each overwritten callback. For example, onClick() may call calc1(), which may further call calc2(), so one call sequence is onClick()-->calc1()-->calc2().">
             <action
                     id="com.example.customoverwrittenidentifier.FindCallbackFunctions"
                     class="com.example.customoverwrittenidentifier.FindCallbackFunctions"
-                    text="Find Overwritten Callback Functions"
-                    description="This plugin finds out all the callback functions overwritten by the developers (e.g., onClick())."/>
+                    text="Find All the Possible Call Sequences of Overridden Callbacks"
+                    description="This plugin finds all the possible call sequences for each overwritten callback. For example, onClick() may call calc1(), which may further call calc2(), so one call sequence is onClick()-->calc1()-->calc2()."/>
 
             <add-to-group group-id="ToolsMenu" anchor="first"/>
         </group>
