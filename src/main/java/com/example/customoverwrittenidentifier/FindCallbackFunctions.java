@@ -44,7 +44,7 @@ public class FindCallbackFunctions extends AnAction {
         List<String> uniqueList = methodCalls.stream().distinct().collect(Collectors.toList());
 
         // Display the results in a dialog
-        showOverwrittenFunctionsDialog(editor.getProject(), uniqueList);
+        showDialog(editor.getProject(), uniqueList);
     }
 
     /**
@@ -106,7 +106,7 @@ public class FindCallbackFunctions extends AnAction {
      * @param project             The project context.
      * @param overwrittenCallbacks List of overwritten callback functions and their call sequences.
      */
-    private void showOverwrittenFunctionsDialog(Project project, List<String> overwrittenCallbacks) {
+    private void showDialog(Project project, List<String> overwrittenCallbacks) {
         String title = "All the Possible Call Sequences";
 
         StringBuilder message = new StringBuilder("Number of sequences: " + overwrittenCallbacks.size() + "\n\n");
