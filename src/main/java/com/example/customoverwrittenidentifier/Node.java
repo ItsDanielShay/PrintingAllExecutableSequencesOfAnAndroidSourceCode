@@ -7,74 +7,76 @@ public class Node {
 
     private  boolean visited = false;
 
-    private int child_id = 0;
+    private NodeTypes nodeType;
 
-    private String name;
+    public enum NodeTypes {
+        METHOD, CONDITION
+    }
 
-    private List<Node> children;
-    private Node father;
+    private String methodName;
 
-    public Node(String name) {
-        this.name = name;
-        this.children = new ArrayList<>();
+    private List<Node> children = new ArrayList<>();
+
+    private Node mainFather;
+
+    private List<Node> fathers = new ArrayList<>();
+
+    public Node(String methodName) {
+        this.methodName = methodName;
+        this.mainFather = this;   // when ever a node is initialized, its mainFather will be itself by default. (*)
     }
 
     public void addChild(Node child) {
         children.add(child);
-        child.child_id = children.size();
-        child.setFather(this);
+        child.addFather(this);
+        child.mainFather = this.mainFather;  // children will be introduced to their main father by their most recent father. (*)
     }
 
-    public Node getChild(int child_id) {
-        for (Node child : this.children){
-            if (child.child_id == child_id){
-                return child;
-            }
-        }
-        return null;
-    }
-
-    public Node getMostLeftUnVisitedChild() {
-        for (Node child : children) {
-            if (!child.isVisited()) {
-                return child;
-            }
-        }
-        return null;
-    }
-
+    //----------------------------------------------------------------------------------------------------------------------------//
+    // These two statements (with this tag (*)) will ensure the program that any node knows the main father. At the beginning,    //
+    // each node considers itself as the main father. However, if the node is added as child of another node, it will be          //
+    // introduced to the main father by the most recent father. Noteworthy, if a child sets the main father as its child, it will //
+    // introduce the main father as the main father again.                                                                        //
+    //----------------------------------------------------------------------------------------------------------------------------//
 
     public List<Node> getChildren() {
         return children;
     }
 
-    public Node getFather() {
-        return father;
+    public List<Node> getFathers() {
+        return fathers;
     }
 
-    // Make setFather private to control access
-    private void setFather(Node father) {
-        this.father = father;
+    public void setAsMainFather(){
+        mainFather = this;
     }
 
-    public String getName() {
-        return name;
+    public Node getMainFather(){
+        return mainFather;
     }
 
-    public void setName(String name) {
-        this.name = name;
+    private void addFather(Node father) {
+        this.fathers.add(father);
     }
 
     public boolean hasFather(){
-        return this.getFather() != null;
+        return this.getFathers() != null;
     }
 
-    public Node getRootNode(){
-        Node root = this;
-        while (root.hasFather()){
-            root = root.getFather();
-        }
-        return root;
+    public void setMethodName(String methodName) {
+        this.methodName = methodName;
+    }
+
+    public String getMethodName() {
+        return methodName;
+    }
+
+    public void setVisited() {
+        this.visited = true;
+    }
+
+    public void setUnvisited() {
+        this.visited = false;
     }
 
     public boolean isVisited() {
@@ -82,18 +84,27 @@ public class Node {
     }
 
     public boolean isAllChildrenVisited() {
-        boolean visited = true;
-
         for (Node child : children){
             if (!child.isVisited()) {
-                visited = false;
-                return visited;
+                return false;
             }
         }
-        return visited;
+        return true;
     }
 
-    public void setVisitedState(boolean visited) {
-        this.visited = visited;
+    public Node getMostLeftUnvisitedChild() {
+        for(Node child: this.children){
+            if(!child.isVisited()){
+                return child;
+            }
+        }
+        return null;
+    }
+
+    public void setNodeType(NodeTypes type) {
+        nodeType = type;
+    }
+    public NodeTypes getNodeType(){
+        return nodeType;
     }
 }
