@@ -5,7 +5,7 @@
 
     <!-- Public plugin name should be written in Title Case.
          Guidelines: https://plugins.jetbrains.com/docs/marketplace/plugin-overview-page.html#plugin-name -->
-    <name>Identifier for Overridden Callbacks Call Sequences</name>
+    <name>CCFG Builder</name>
 
     <depends>com.intellij.modules.platform</depends>
     <depends>com.intellij.java</depends>
@@ -22,13 +22,13 @@
 
     <actions>
         <group
-                id="FindAllThePossibleCallSequences"
-                description="This plugin finds all the possible call sequences for each overwritten callback. For example, onClick() may call calc1(), which may further call calc2(), so one call sequence is onClick()-->calc1()-->calc2().">
+                id="BuildTheCCFG"
+                description="This plugin builds Call Control Flow Graph (CCFG) of a given Android java source code.">
             <action
-                    id="com.example.customoverwrittenidentifier.FindCallbackFunctions"
-                    class="com.example.customoverwrittenidentifier.FindCallbackFunctions"
-                    text="Find All the Possible Call Sequences of Overridden Callbacks"
-                    description="This plugin finds all the possible call sequences for each overwritten callback. For example, onClick() may call calc1(), which may further call calc2(), so one call sequence is onClick()-->calc1()-->calc2()."/>
+                    id="com.example.customoverwrittenidentifier.buildCallControlFlowGraph"
+                    class="com.example.customoverwrittenidentifier.buildCallControlFlowGraph"
+                    text="Build the CCFG"
+                    description="This plugin builds Call Control Flow Graph (CCFG) of a given Android java source code."/>
 
             <add-to-group group-id="ToolsMenu" anchor="first"/>
         </group>
