@@ -41,12 +41,10 @@ public class buildCallControlFlowGraph extends AnAction {
 
                     // Check if the method is annotated with @Override
                     if (method.getAnnotation("java.lang.Override") != null) {
-                        Node entryNode = new Node("Entry Node", Node.NodeTypes.Entry);
                         String overriddenMethodName = method.getName();
-                        Node overriddenMethodNode = new Node(overriddenMethodName, Node.NodeTypes.METHOD);
-                        entryNode.addChild(overriddenMethodNode);
+                        Node overriddenMethodNode = new Node(overriddenMethodName, Node.NodeTypes.ENTRY);
                         callControlFlowGraphs.add(overriddenMethodNode);
-                        raiseTheTree(method, editor.getProject().getBasePath(), callControlFlowGraphs);
+                        raiseTree(method, editor.getProject().getBasePath(), callControlFlowGraphs);
                     }
                 }
             });
@@ -60,7 +58,7 @@ public class buildCallControlFlowGraph extends AnAction {
         showDialog(editor.getProject());
     }
 
-    private void raiseTheTree(PsiMethod psiMethod, String basePath, List<Node> callControlFlowGraphs) {
+    private void raiseTree(PsiMethod psiMethod, String basePath, List<Node> callControlFlowGraphs) {
         // Check if the method is within the project's base path
         if (psiMethod.getContainingFile().getVirtualFile().getPath().startsWith(basePath)) {
             // Check if the method is annotated with @Override
@@ -85,10 +83,7 @@ public class buildCallControlFlowGraph extends AnAction {
         }
     }
 
-
     private void controlFlowStatementsIdentifier(PsiStatement statement, String basePath, PsiMethod method, List<Node> callControlFlowGraphs) {
-
-
             // Get the type of the statement (If, For, Try, Switch, While, Do While, MethodCall, Declaration)
             String statementType = getStatementType(statement);
 
@@ -162,12 +157,6 @@ public class buildCallControlFlowGraph extends AnAction {
         else if(statement instanceof PsiCodeBlock){
             return "Code Block";
         }
-        else if(statement instanceof PsiBlockStatement){
-            return "Block Statement";
-        }
-        else if(statement instanceof PsiLoopStatement){
-            return "Loop Statement";
-        }
         // Return "Not identified" if the statement type is not recognized
         return "Not identified";
     }
@@ -178,13 +167,17 @@ public class buildCallControlFlowGraph extends AnAction {
         assert thenBranch != null;
 
         String condition = Objects.requireNonNull(forStatement.getCondition()).getText();
+        String update = Objects.requireNonNull(forStatement.getUpdate()).getText();
+
         Node forStatementNode = new Node(condition, Node.NodeTypes.LOOP);
+
+        Node updateOfForStatementNode = new Node(update, Node.NodeTypes.CONDITION);
 
 
         int lastNodeIndex = callControlFlowGraphs.size()-1;
         callControlFlowGraphs.get(lastNodeIndex).addChild(forStatementNode);
 
-        Node exitPointOfforStatementNode = new Node("Loop Exit Point", Node.NodeTypes.LOOP_EXIT);
+        Node exitPointOfforStatementNode = new Node("For Loop Exit Point", Node.NodeTypes.LOOP_EXIT);
         forStatementNode.addChild(exitPointOfforStatementNode);
 
         callControlFlowGraphs.set(lastNodeIndex, forStatementNode);
@@ -195,9 +188,21 @@ public class buildCallControlFlowGraph extends AnAction {
             controlFlowStatementsIdentifier(innerStatement, basePath, method, callControlFlowGraphs);
         }
 
-        callControlFlowGraphs.get(callControlFlowGraphs.size() - 1).addChild(forStatementNode);
+        makeLoopLeafNodesUnited(callControlFlowGraphs, forStatementNode, lastNodeIndex);
+
+        callControlFlowGraphs.get(lastNodeIndex).addChild(updateOfForStatementNode);
+
+        updateOfForStatementNode.addChild(forStatementNode);
 
         callControlFlowGraphs.set(lastNodeIndex, exitPointOfforStatementNode);
+    }
+
+    private void makeLoopLeafNodesUnited(List<Node> callControlFlowGraphs, Node loopStatementNode, int lastNodeIndex) {
+        List<Node> childlessNodes = loopStatementNode.getChildlessNodes(Node.NodeTypes.ALL);
+
+        List<Node> unitedFathers = new ArrayList<>(childlessNodes);
+
+        callControlFlowGraphs.get(lastNodeIndex).setUnitedFathers(unitedFathers);
     }
 
     private void processIfStatement(PsiIfStatement ifStatement, PsiMethod method, String basePath, List<Node> callControlFlowGraphs, Node inputIfStatementNode) {
@@ -314,6 +319,8 @@ public class buildCallControlFlowGraph extends AnAction {
 
         callControlFlowGraphs.get(lastNodeIndex).addChild(doWhileStatementNode);
 
+        doWhileStatementNode.addChild(doBlockNode);
+
         doWhileStatementNode.addChild(exitPointOfDoWhileStatementNode);
 
         callControlFlowGraphs.set(lastNodeIndex, exitPointOfDoWhileStatementNode);
@@ -341,7 +348,7 @@ public class buildCallControlFlowGraph extends AnAction {
 
                     if (switchLabelStatement.isDefaultCase()) {
                         String caseCondition = "Default";
-                        Node caseConditionStatementNode = new Node(caseCondition, Node.NodeTypes.CONDITION);
+                        Node caseConditionStatementNode = new Node(caseCondition, Node.NodeTypes.CASE);
 
                         if (previousCaseNode == null){
                             callControlFlowGraphs.get(lastNodeIndex).addChild(caseConditionStatementNode);
@@ -358,15 +365,13 @@ public class buildCallControlFlowGraph extends AnAction {
                         for (PsiCaseLabelElement caseLabelElement : Objects.requireNonNull(switchLabelStatement.getCaseLabelElementList()).getElements()) {
 
                             String caseCondition = caseLabelElement.getText();
-                            Node caseConditionStatementNode = new Node(caseCondition, Node.NodeTypes.CONDITION);
+                            Node caseConditionStatementNode = new Node(caseCondition, Node.NodeTypes.CASE);
 
                             if (previousCaseNode == null){
                                 switchStatementNode.addChild(caseConditionStatementNode);
                             }
                             else {
-                                if(!lastCaseHadBreak){
-                                    nonBreakNodes.add(previousCaseNode);
-                                }
+
                                 if (lastCaseHadBreak) {
                                     lastCaseHadBreak = false;
                                     if (nonBreakNodes.isEmpty()) {
@@ -378,6 +383,8 @@ public class buildCallControlFlowGraph extends AnAction {
                                         switchStatementNode.addChild(caseConditionStatementNode);
                                     }
                                 } else {
+                                    nonBreakNodes.add(previousCaseNode);
+
                                     switchStatementNode.addChild(caseConditionStatementNode);
 
                                     Node mostLastNonBreakNode = nonBreakNodes.get(nonBreakNodes.size() - 1);
@@ -404,6 +411,14 @@ public class buildCallControlFlowGraph extends AnAction {
         // break statements are connected to the exitPointOfSwitchStatementNode automatically using processBreakStatements function
         callControlFlowGraphs.get(lastNodeIndex).addChild(exitPointOfSwitchStatementNode);
 
+        // if there wasn't a default case, one case would have exactly one child until this step. The next child should be the exit node of
+        // the switch node. So we will find it and add the exit node as its child. The result would have either 1 or 0 nodes.
+        List<Node> singleChildCaseNodesList = switchStatementNode.getSingleChildNodes(Node.NodeTypes.CASE);
+        if(!singleChildCaseNodesList.isEmpty()){
+            Node lastCaseWhereNoDefaultCaseExits = singleChildCaseNodesList.get(0);
+            lastCaseWhereNoDefaultCaseExits.addChild(exitPointOfSwitchStatementNode);
+        }
+
         callControlFlowGraphs.set(lastNodeIndex, exitPointOfSwitchStatementNode);
     }
 
@@ -413,10 +428,9 @@ public class buildCallControlFlowGraph extends AnAction {
         assert tryBlock != null;
 
         int lastNodeIndex = callControlFlowGraphs.size()-1;
-        Node initialFather = callControlFlowGraphs.get(lastNodeIndex).getFathers().get(0);
 
         String condition = "Try Block";
-        Node tryStatementNode = new Node(condition, Node.NodeTypes.CONDITION);
+        Node tryStatementNode = new Node(condition, Node.NodeTypes.TRY);
 
         Node parentNode = callControlFlowGraphs.get(lastNodeIndex);
 
@@ -429,10 +443,8 @@ public class buildCallControlFlowGraph extends AnAction {
 
         Node lastTryNode = callControlFlowGraphs.get(lastNodeIndex);
 
-        callControlFlowGraphs.set(lastNodeIndex, initialFather);
-
         String catchCondition = "Catch Block";
-        Node catchStatementNode = new Node(catchCondition, Node.NodeTypes.CONDITION);
+        Node catchStatementNode = new Node(catchCondition, Node.NodeTypes.CATCH);
         
         parentNode.addChild(catchStatementNode);
         callControlFlowGraphs.set(lastNodeIndex, catchStatementNode);
@@ -450,16 +462,18 @@ public class buildCallControlFlowGraph extends AnAction {
         // Get the finally block from the try statement
         PsiCodeBlock finallyBlock = tryStatement.getFinallyBlock();
         if (finallyBlock != null) {
-            callControlFlowGraphs.set(lastNodeIndex, initialFather);
-            String finallyCondition = "Finally Block";
-            Node finallyStatementNode = new Node(finallyCondition, Node.NodeTypes.CONDITION);
+            String finallyCoName = "Finally Block";
+            Node finallyStatementNode = new Node(finallyCoName, Node.NodeTypes.FINALLY);
 
             lastTryNode.addChild(finallyStatementNode);
             lastCatchNode.addChild(finallyStatementNode);
 
             callControlFlowGraphs.set(lastNodeIndex, finallyStatementNode);
 
-            processFinallyBlock(finallyBlock, method, basePath, callControlFlowGraphs);
+            for (PsiStatement finallyStatement : PsiTreeUtil.findChildrenOfType(finallyBlock, PsiStatement.class)) {
+                // Recursively analyze control flow statements within the finally block
+                controlFlowStatementsIdentifier(finallyStatement, basePath, method, callControlFlowGraphs);
+            }
         }
         else {
             List<Node> unitedFathers = new ArrayList<>();
@@ -468,16 +482,6 @@ public class buildCallControlFlowGraph extends AnAction {
 
             lastCatchNode.setUnitedFathers(unitedFathers);
             lastTryNode.setUnitedFathers(unitedFathers);
-        }
-    }
-
-    private void processFinallyBlock(PsiCodeBlock finallyBlock, PsiMethod method, String basePath, List<Node> callControlFlowGraphs) {
-        // Create a StringBuilder for the child call sequence, indicating the start of a "Finally" block
-
-        // Iterate through statements in the finally block and identify control flow statements
-        for (PsiStatement finallyStatement : PsiTreeUtil.findChildrenOfType(finallyBlock, PsiStatement.class)) {
-            // Recursively analyze control flow statements within the finally block
-            controlFlowStatementsIdentifier(finallyStatement, basePath, method, callControlFlowGraphs);
         }
     }
 
@@ -493,6 +497,8 @@ public class buildCallControlFlowGraph extends AnAction {
             callControlFlowGraphs.get(lastNodeIndex).addChild(methodNode);
 
             callControlFlowGraphs.set(lastNodeIndex, methodNode);
+
+            Node terminalNodeOfTheNestedFunctions = null;
 
             // Check if the method is within the project's base path
             if (resolvedMethod.getContainingFile().getVirtualFile().getPath().startsWith(basePath)) {
@@ -516,11 +522,21 @@ public class buildCallControlFlowGraph extends AnAction {
                                 // if this method-statement will build a loop of methods, points out to the original method node
                                 // which is the first member of the chain. Covers both recursive and multiple functions.
                                 if(innerMethodNode.doesThisExitsInChainPotentialFunctions()){
-                                    Node terminalNodeOfTheNestedFunctions = innerMethodNode.getTheOriginalFunctionNode();
+                                    terminalNodeOfTheNestedFunctions = innerMethodNode.getTheOriginalFunctionNode();
 
                                     Node pointerNode = new Node("Pointer", Node.NodeTypes.POINTER);
                                     Node lastNode = callControlFlowGraphs.get(lastNodeIndex);
                                     lastNode.addChild(pointerNode);
+
+                                    boolean isItiRecursive = terminalNodeOfTheNestedFunctions == lastNode;
+
+                                    if(isItiRecursive){
+                                        terminalNodeOfTheNestedFunctions.setMethodRecursive(true);
+                                    }
+                                    else {
+                                        terminalNodeOfTheNestedFunctions.setMethodFirstMemberOfMultipleFunctions(true);
+                                    }
+
                                     pointerNode.addChild(terminalNodeOfTheNestedFunctions);
 
                                     callControlFlowGraphs.set(lastNodeIndex, pointerNode);
@@ -542,9 +558,28 @@ public class buildCallControlFlowGraph extends AnAction {
 
             Node exitPointMethodNode = new Node(methodName, Node.NodeTypes.METHOD_EXIT);
             addNodeToGraph(callControlFlowGraphs, exitPointMethodNode);
+
+            if(methodNode.isMethodRecursive() || methodNode.isMethodFirstMemberOfMultipleFunctions()) {
+                Node affiliationPointerNode = new Node("Affiliation Pointer", Node.NodeTypes.POINTER_AFFILIATION);
+                exitPointMethodNode.addChild(affiliationPointerNode);
+
+                Node veryNextStatementOfLatterPartOfTheLastMethod = affiliationPointerNode.getPartner().getChildren().get(0);
+
+                //there will be only two item in the following list, one of them is terminal node and
+                //the other is the 'veryNextStatementOfLatterPartOfTheLastMethod'
+                for(Node child: affiliationPointerNode.getPartner().getChildren()){
+                    if(child!=terminalNodeOfTheNestedFunctions) {
+                        veryNextStatementOfLatterPartOfTheLastMethod = child;
+                    }
+                }
+
+                affiliationPointerNode.addChild(veryNextStatementOfLatterPartOfTheLastMethod);
+                affiliationPointerNode.getPartner().removeChild(veryNextStatementOfLatterPartOfTheLastMethod);
+
+                addNodeToGraph(callControlFlowGraphs, affiliationPointerNode);
+            }
         }
     }
-
 
     private void processDeclarationStatement(PsiDeclarationStatement statement, List<Node> callControlFlowGraphs) {
         // Get the declared elements in the declaration statement
@@ -575,7 +610,7 @@ public class buildCallControlFlowGraph extends AnAction {
     }
 
     private void processBreakStatement(List<Node> callControlFlowGraphs) {
-        Node breakNode = new Node("Break", Node.NodeTypes.CONDITION);
+        Node breakNode = new Node("Break", Node.NodeTypes.BREAK);
 
         int lastIndex = callControlFlowGraphs.size()-1;
         Node lastNode = callControlFlowGraphs.get(lastIndex);
@@ -589,19 +624,24 @@ public class buildCallControlFlowGraph extends AnAction {
     }
 
     private void processContinueStatement(List<Node> callControlFlowGraphs) {
-        Node continueNode = new Node("Continue", Node.NodeTypes.CONDITION);
+        Node continueNode = new Node("Continue", Node.NodeTypes.CONTINUE);
 
         int lastIndex = callControlFlowGraphs.size()-1;
         Node lastNode = callControlFlowGraphs.get(lastIndex);
         lastNode.addChild(continueNode);
 
         Node mostInnerLoop = continueNode.getMostInnerLoop();
+        Node exitPointOfMostInnerLoop = continueNode.getExitPointOfMostInnerLoop();
+        String mostInnerLoopName = exitPointOfMostInnerLoop.getName();
+        boolean isMostInnerLoopAFor = mostInnerLoopName.equals("For Loop Exit Point");
 
         if (mostInnerLoop != null) {
-            continueNode.addChild(mostInnerLoop);
-        } else {
-            // Handle the case when mostInnerLoop is null (potential issue)
-            System.out.println("Error: mostInnerLoop is null. (causing an error at execution time too)");
+            // if the most inner loop is a for statement, the child of the continue node should be the updater node, but since
+            // at this point of the analysis, the plugin don't have easy access to it, the updater will be added as a child of
+            // the continue node using the 'united fathers' concept.
+            if(!isMostInnerLoopAFor) {
+                continueNode.addChild(mostInnerLoop);
+            }
         }
     }
 
