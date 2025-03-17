@@ -12,11 +12,7 @@ import com.intellij.psi.search.searches.AllClassesSearch;
 
 import java.util.*;
 
-/**
- * A "Version B" that handles Java control flow (if/else, loops, switch, try, break/continue)
- * plus detects increments/decrements and assignments with method calls on the right-hand side.
- * Uses a depth limit to avoid infinite expansions.
- */
+
 public class buildCallControlFlowGraph extends AnAction {
 
     // Maximum expansion depth to avoid infinite loops or recursion
@@ -638,7 +634,7 @@ public class buildCallControlFlowGraph extends AnAction {
      * Show final results in a dialog.
      */
     private void showDialog(Project project, List<String> methodCalls) {
-        String title = "All the Possible Call Sequences (Version A - Capped at depth of 10)";
+        String title = "All the Possible Call Sequences (Version A - Capped at depth of "+MAX_DEPTH+")";
         StringBuilder message = new StringBuilder("Number of sequences: ").append(methodCalls.size()).append("\n\n");
         for (String seq : methodCalls) {
             message.append(seq).append("\n---------------------\n");
