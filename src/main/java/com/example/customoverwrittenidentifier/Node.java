@@ -7,13 +7,15 @@ import java.util.Map;
 
 public class Node {
 
-    private  boolean visited = false;
+    private boolean visited = false;
 
     private NodeTypes nodeType;
 
     public enum NodeTypes {
-        ENTRY, METHOD, METHOD_EXIT, CONDITION, LOOP, LOOP_EXIT, SWITCH, CASE, SWITCH_EXIT, POINTER, POINTER_AFFILIATION,
-        TRY, CATCH, FINALLY, BREAK, CONTINUE, ALL
+        ENTRY, METHOD, METHOD_EXIT, CONDITION, LOOP, LOOP_EXIT,
+        SWITCH, CASE, SWITCH_EXIT, POINTER, POINTER_AFFILIATION,
+        TRY, CATCH, FINALLY, BREAK, CONTINUE, ALL,
+        STATEMENT // <--- For unrecognized or generic statements
     }
 
     private final String name;

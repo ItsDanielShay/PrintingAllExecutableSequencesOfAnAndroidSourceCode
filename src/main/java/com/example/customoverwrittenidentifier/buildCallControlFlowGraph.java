@@ -1,6 +1,5 @@
 package com.example.customoverwrittenidentifier;
 
-import com.google.common.collect.Lists;
 import com.intellij.openapi.actionSystem.AnAction;
 import com.intellij.openapi.actionSystem.AnActionEvent;
 import com.intellij.openapi.actionSystem.CommonDataKeys;
@@ -10,30 +9,39 @@ import com.intellij.openapi.ui.Messages;
 import com.intellij.psi.*;
 import com.intellij.psi.search.GlobalSearchScope;
 import com.intellij.psi.search.searches.AllClassesSearch;
-import com.intellij.psi.util.PsiTreeUtil;
 
 import java.util.*;
 
-
+/**
+ * A "Version B" that handles Java control flow (if/else, loops, switch, try, break/continue)
+ * plus detects increments/decrements and assignments with method calls on the right-hand side.
+ * Uses a depth limit to avoid infinite expansions.
+ */
 public class buildCallControlFlowGraph extends AnAction {
+
+    // Maximum expansion depth to avoid infinite loops or recursion
+    private static final int MAX_DEPTH = 10;
 
     @Override
     public void actionPerformed(AnActionEvent anActionEvent) {
-        List<Node> callControlFlowGraphs = new ArrayList<>();
+        List<String> methodCalls = new ArrayList<>();
+
         // Retrieve the editor and PSI file from the action event
         Editor editor = anActionEvent.getData(CommonDataKeys.EDITOR);
         PsiFile psiFile = anActionEvent.getData(CommonDataKeys.PSI_FILE);
-
 
         // Check if the editor and PSI file are available
         if (editor == null || psiFile == null) {
             return;
         }
 
-        // Perform a global search for all classes in the project
-        AllClassesSearch.search(GlobalSearchScope.projectScope(Objects.requireNonNull(editor.getProject())), editor.getProject()).forEach(psiClass -> {
+        Project project = editor.getProject();
+        if (project == null) {
+            return;
+        }
 
-            // Visit each class and its methods
+        // Perform a global search for all classes in the project
+        AllClassesSearch.search(GlobalSearchScope.projectScope(project), project).forEach(psiClass -> {
             psiClass.accept(new JavaRecursiveElementVisitor() {
                 @Override
                 public void visitMethod(PsiMethod method) {
@@ -41,632 +49,607 @@ public class buildCallControlFlowGraph extends AnAction {
 
                     // Check if the method is annotated with @Override
                     if (method.getAnnotation("java.lang.Override") != null) {
-                        String overriddenMethodName = method.getName();
-                        Node overriddenMethodNode = new Node(overriddenMethodName, Node.NodeTypes.ENTRY);
-                        callControlFlowGraphs.add(overriddenMethodNode);
-                        raiseTree(method, editor.getProject().getBasePath(), callControlFlowGraphs);
+                        exploreOverriddenMethod(method, project.getBasePath(), methodCalls);
                     }
                 }
             });
-            // Return true to continue iterating through classes
             return true;
         });
+
         // Display the results in a dialog
-
-        callControlFlowGraphs.replaceAll(Node::getMainFather);
-
-        showDialog(editor.getProject());
+        showDialog(project, methodCalls);
     }
 
-    private void raiseTree(PsiMethod psiMethod, String basePath, List<Node> callControlFlowGraphs) {
+    /**
+     * Explore an @Override method, retrieving all possible paths (as strings).
+     */
+    private void exploreOverriddenMethod(PsiMethod psiMethod,
+                                         String basePath,
+                                         List<String> methodCalls) {
+
         // Check if the method is within the project's base path
-        if (psiMethod.getContainingFile().getVirtualFile().getPath().startsWith(basePath)) {
-            // Check if the method is annotated with @Override
-            PsiAnnotation overrideAnnotation = psiMethod.getModifierList().findAnnotation("java.lang.Override");
-            if (overrideAnnotation != null ) {
-                PsiCodeBlock body = psiMethod.getBody();
-                if (body != null) {
+        PsiFile containingFile = psiMethod.getContainingFile();
+        if (containingFile == null
+                || containingFile.getVirtualFile() == null
+                || !containingFile.getVirtualFile().getPath().startsWith(basePath)) {
+            return;
+        }
 
-                    // Retrieve statements from the method body
-                    PsiStatement[] statements = body.getStatements();
+        // If it's annotated with @Override, proceed
+        if (psiMethod.getAnnotation("java.lang.Override") == null) {
+            return;
+        }
 
-                    // Iterate through statements in the method body
-                    for (PsiStatement statement : statements) {
-//                        String lastMethod;
-//                        lastMethod = psiMethod.getName();
-//                        StringBuilder stringBuilder = new StringBuilder(lastMethod);
+        PsiCodeBlock body = psiMethod.getBody();
+        if (body == null) {
+            return;
+        }
 
-                        controlFlowStatementsIdentifier(statement, basePath, psiMethod, callControlFlowGraphs);
+        // For every top-level statement in the method's body, explore
+        for (PsiStatement statement : body.getStatements()) {
+            Deque<PsiMethod> callChain = new ArrayDeque<>();
+            callChain.push(psiMethod);
+
+            StringBuilder pathSoFar = new StringBuilder(psiMethod.getName());
+            exploreStatement(statement,
+                    basePath,
+                    pathSoFar,
+                    callChain,
+                    1, // starting depth
+                    false, // not initially in a loop
+                    methodCalls);
+        }
+    }
+
+    /**
+     * Recursively analyze a given statement, building paths in string form.
+     */
+    private void exploreStatement(PsiStatement statement,
+                                  String basePath,
+                                  StringBuilder pathSoFar,
+                                  Deque<PsiMethod> callChain,
+                                  int depth,
+                                  boolean inLoop,
+                                  List<String> methodCalls) {
+
+        // If we exceed the MAX_DEPTH, stop further expansions
+        if (depth > MAX_DEPTH) {
+            methodCalls.add(pathSoFar.toString() + " --> (depth limit reached)");
+            return;
+        }
+        if (statement == null) {
+            return;
+        }
+
+        String statementType = getStatementType(statement);
+
+        switch (statementType) {
+            case "If":
+                processIfStatement((PsiIfStatement) statement,
+                        basePath,
+                        pathSoFar,
+                        callChain,
+                        depth,
+                        inLoop,
+                        methodCalls);
+                break;
+            case "For":
+                processForStatement((PsiForStatement) statement,
+                        basePath,
+                        pathSoFar,
+                        callChain,
+                        depth,
+                        methodCalls);
+                break;
+            case "While":
+                processWhileStatement((PsiWhileStatement) statement,
+                        basePath,
+                        pathSoFar,
+                        callChain,
+                        depth,
+                        methodCalls);
+                break;
+            case "Do While":
+                processDoWhileStatement((PsiDoWhileStatement) statement,
+                        basePath,
+                        pathSoFar,
+                        callChain,
+                        depth,
+                        methodCalls);
+                break;
+            case "Switch":
+                processSwitchStatement((PsiSwitchStatement) statement,
+                        basePath,
+                        pathSoFar,
+                        callChain,
+                        depth,
+                        methodCalls);
+                break;
+            case "Try":
+                processTryStatement((PsiTryStatement) statement,
+                        basePath,
+                        pathSoFar,
+                        callChain,
+                        depth,
+                        inLoop,
+                        methodCalls);
+                break;
+            case "Break":
+                pathSoFar.append(" --> Break");
+                methodCalls.add(pathSoFar.toString());
+                break;
+            case "Continue":
+                pathSoFar.append(" --> Continue");
+                methodCalls.add(pathSoFar.toString());
+                break;
+            case "MethodCall":
+                processMethodCall((PsiExpressionStatement) statement,
+                        basePath,
+                        pathSoFar,
+                        callChain,
+                        depth,
+                        inLoop,
+                        methodCalls);
+                break;
+            case "Declaration":
+                processDeclarationStatement((PsiDeclarationStatement) statement,
+                        pathSoFar,
+                        methodCalls);
+                break;
+            case "Assignment":
+                processAssignmentStatement((PsiExpressionStatement) statement,
+                        basePath,
+                        pathSoFar,
+                        callChain,
+                        depth,
+                        inLoop,
+                        methodCalls);
+                break;
+            case "IncrementDecrement":
+                pathSoFar.append(" --> [Increment/Decrement: ")
+                        .append(statement.getText())
+                        .append("]");
+                methodCalls.add(pathSoFar.toString());
+                break;
+            default:
+                // Possibly a block statement or truly unrecognized
+                if (statement instanceof PsiBlockStatement) {
+                    PsiBlockStatement block = (PsiBlockStatement) statement;
+                    for (PsiStatement inner : block.getCodeBlock().getStatements()) {
+                        exploreStatement(inner, basePath, new StringBuilder(pathSoFar),
+                                callChain, depth, inLoop, methodCalls);
                     }
+                } else {
+                    // Generic/unknown statement => just record it
+                    methodCalls.add(pathSoFar.toString() + " --> [Unidentified Statement]");
                 }
-            }
+                break;
         }
     }
 
-    private void controlFlowStatementsIdentifier(PsiStatement statement, String basePath, PsiMethod method, List<Node> callControlFlowGraphs) {
-            // Get the type of the statement (If, For, Try, Switch, While, Do While, MethodCall, Declaration)
-            String statementType = getStatementType(statement);
-
-            // Perform actions based on the type of statement
-            switch (statementType) {
-                case "If":
-                    processIfStatement((PsiIfStatement) statement, method, basePath, callControlFlowGraphs, null);
-                    break;
-                case "For":
-                    processForStatement((PsiForStatement) statement, method, basePath, callControlFlowGraphs);
-                    break;
-                case "Try":
-                    processTryStatement((PsiTryStatement) statement, method, basePath, callControlFlowGraphs);
-                    break;
-                case "Switch":
-                    processSwitchStatement((PsiSwitchStatement) statement, method, basePath, callControlFlowGraphs);
-                    break;
-                case "While":
-                    processWhileStatement((PsiWhileStatement) statement, method, basePath, callControlFlowGraphs);
-                    break;
-                case "Do While":
-                    processDoWhileStatement((PsiDoWhileStatement) statement, method, basePath, callControlFlowGraphs);
-                    break;
-                case "MethodCall":
-                    processMethodStatement((PsiExpressionStatement) statement, basePath, callControlFlowGraphs);
-                    break;
-                case "Declaration":
-                    processDeclarationStatement((PsiDeclarationStatement) statement, callControlFlowGraphs);
-                    break;
-                case "Break":
-                    processBreakStatement(callControlFlowGraphs);
-                    break;
-                case "Continue":
-                    processContinueStatement(callControlFlowGraphs);
-                    break;
-            }
-    }
-
-    public String getStatementType(PsiStatement statement){
-        // Check the class of the PsiStatement to identify its type
-        if(statement instanceof PsiForStatement){
-            return "For";
-        }
-        else if(statement instanceof PsiIfStatement){
+    /**
+     * Identify the statement type, with extra checks for increments, assignments, etc.
+     */
+    private String getStatementType(PsiStatement statement) {
+        if (statement instanceof PsiIfStatement) {
             return "If";
         }
-        else if(statement instanceof PsiWhileStatement){
+        else if (statement instanceof PsiForStatement) {
+            return "For";
+        }
+        else if (statement instanceof PsiWhileStatement) {
             return "While";
         }
-        else if(statement instanceof PsiDoWhileStatement){
+        else if (statement instanceof PsiDoWhileStatement) {
             return "Do While";
         }
-        else if(statement instanceof PsiSwitchStatement){
+        else if (statement instanceof PsiSwitchStatement) {
             return "Switch";
         }
-        else if(statement instanceof PsiTryStatement){
+        else if (statement instanceof PsiTryStatement) {
             return "Try";
         }
-        else if(statement instanceof PsiExpressionStatement && ((PsiExpressionStatement) statement).getExpression() instanceof PsiMethodCallExpression){
-            return "MethodCall";
-        }
-        else if(statement instanceof PsiDeclarationStatement){
-            return "Declaration";
-        }
-        else if(statement instanceof PsiBreakStatement){
+        else if (statement instanceof PsiBreakStatement) {
             return "Break";
         }
-        else if(statement instanceof PsiContinueStatement){
+        else if (statement instanceof PsiContinueStatement) {
             return "Continue";
         }
-        else if(statement instanceof PsiCodeBlock){
-            return "Code Block";
+        else if (statement instanceof PsiExpressionStatement) {
+            // Check expression details
+            PsiExpression expr = ((PsiExpressionStatement) statement).getExpression();
+            if (expr instanceof PsiMethodCallExpression) {
+                return "MethodCall";
+            }
+            // new: check if it's an assignment
+            else if (expr instanceof PsiAssignmentExpression) {
+                return "Assignment";
+            }
+            // check if it's increment/decrement
+            else if (expr instanceof PsiPostfixExpression ||
+                    expr instanceof PsiPrefixExpression) {
+                // e.g. count++, ++count, count--
+                return "IncrementDecrement";
+            }
         }
-        // Return "Not identified" if the statement type is not recognized
+        else if (statement instanceof PsiDeclarationStatement) {
+            return "Declaration";
+        }
         return "Not identified";
     }
 
-    private void processForStatement(PsiForStatement forStatement, PsiMethod method, String basePath, List<Node> callControlFlowGraphs) {
-        // Get the body of the for statement
-        PsiStatement thenBranch = forStatement.getBody();
-        assert thenBranch != null;
+    /* ========== PROCESSING METHODS ========== */
 
-        String condition = Objects.requireNonNull(forStatement.getCondition()).getText();
-        String update = Objects.requireNonNull(forStatement.getUpdate()).getText();
+    private void processIfStatement(PsiIfStatement ifStmt,
+                                    String basePath,
+                                    StringBuilder pathSoFar,
+                                    Deque<PsiMethod> callChain,
+                                    int depth,
+                                    boolean inLoop,
+                                    List<String> methodCalls) {
+        PsiExpression condition = ifStmt.getCondition();
+        String conditionText = (condition == null) ? "If (?)" : ("If (" + condition.getText() + ")");
+        StringBuilder thenPath = new StringBuilder(pathSoFar).append(" --> ").append(conditionText);
 
-        Node forStatementNode = new Node(condition, Node.NodeTypes.LOOP);
-
-        Node updateOfForStatementNode = new Node(update, Node.NodeTypes.CONDITION);
-
-
-        int lastNodeIndex = callControlFlowGraphs.size()-1;
-        callControlFlowGraphs.get(lastNodeIndex).addChild(forStatementNode);
-
-        Node exitPointOfforStatementNode = new Node("For Loop Exit Point", Node.NodeTypes.LOOP_EXIT);
-        forStatementNode.addChild(exitPointOfforStatementNode);
-
-        callControlFlowGraphs.set(lastNodeIndex, forStatementNode);
-
-        // Iterate through statements in the body of the for statement and identify control flow statements
-        for (PsiStatement innerStatement : PsiTreeUtil.findChildrenOfType(thenBranch, PsiStatement.class)) {
-            // Recursively analyze control flow statements within the body of the for statement
-            controlFlowStatementsIdentifier(innerStatement, basePath, method, callControlFlowGraphs);
+        // Then branch
+        PsiStatement thenBranch = ifStmt.getThenBranch();
+        if (thenBranch != null) {
+            exploreSubStatements(thenBranch, basePath, thenPath, callChain, depth, inLoop, methodCalls);
         }
 
-        makeLoopLeafNodesUnited(callControlFlowGraphs, forStatementNode, lastNodeIndex);
-
-        callControlFlowGraphs.get(lastNodeIndex).addChild(updateOfForStatementNode);
-
-        updateOfForStatementNode.addChild(forStatementNode);
-
-        callControlFlowGraphs.set(lastNodeIndex, exitPointOfforStatementNode);
-    }
-
-    private void makeLoopLeafNodesUnited(List<Node> callControlFlowGraphs, Node loopStatementNode, int lastNodeIndex) {
-        List<Node> childlessNodes = loopStatementNode.getChildlessNodes(Node.NodeTypes.ALL);
-
-        List<Node> unitedFathers = new ArrayList<>(childlessNodes);
-
-        callControlFlowGraphs.get(lastNodeIndex).setUnitedFathers(unitedFathers);
-    }
-
-    private void processIfStatement(PsiIfStatement ifStatement, PsiMethod method, String basePath, List<Node> callControlFlowGraphs, Node inputIfStatementNode) {
-        // Get the then branch of the if statement
-        PsiStatement thenBranch = ifStatement.getThenBranch();
-        assert thenBranch != null;
-
-        String condition = Objects.requireNonNull(ifStatement.getCondition()).getText();
-        Node ifStatementNode = new Node(condition, Node.NodeTypes.CONDITION);
-        int lastNodeIndex = callControlFlowGraphs.size() - 1;
-
-        if(inputIfStatementNode == null) {
-            callControlFlowGraphs.get(lastNodeIndex).addChild(ifStatementNode);
-        }
-        else {
-            inputIfStatementNode.addChild(ifStatementNode);
-        }
-
-        callControlFlowGraphs.set(lastNodeIndex, ifStatementNode);
-
-        // Iterate through statements in the then branch and identify control flow statements
-        for (PsiStatement innerStatement : PsiTreeUtil.findChildrenOfType(thenBranch, PsiStatement.class)) {
-            // Recursively analyze control flow statements within the then branch
-            controlFlowStatementsIdentifier(innerStatement, basePath, method, callControlFlowGraphs);
-        }
-
-        // Check for the existence of the "else" branch
-        PsiStatement elseBranch = ifStatement.getElseBranch();
+        // Else branch
+        PsiStatement elseBranch = ifStmt.getElseBranch();
         if (elseBranch != null) {
-            // Iterate through statements in the else branch and identify control flow statements
-            if(getStatementType((PsiStatement) elseBranch).equalsIgnoreCase("If")){
-                processIfStatement((PsiIfStatement) elseBranch, method, basePath, callControlFlowGraphs, ifStatementNode);
-            }
-            else {
-                Node elseStatementNode = new Node("Else", Node.NodeTypes.CONDITION);
-                ifStatementNode.addChild(elseStatementNode);
-
-                callControlFlowGraphs.set(lastNodeIndex, elseStatementNode);
-
-                for (PsiStatement innerStatement : PsiTreeUtil.findChildrenOfType(elseBranch, PsiStatement.class)) {
-                    // Recursively analyze control flow statements within the else branch
-                    controlFlowStatementsIdentifier(innerStatement, basePath, method, callControlFlowGraphs);
-                }
-
-                makeIfLeafNodesUnited(callControlFlowGraphs, ifStatementNode, lastNodeIndex);
+            if (elseBranch instanceof PsiIfStatement) {
+                StringBuilder elseIfPath = new StringBuilder(pathSoFar).append(" --> ElseIf");
+                processIfStatement((PsiIfStatement) elseBranch,
+                        basePath,
+                        elseIfPath,
+                        callChain,
+                        depth,
+                        inLoop,
+                        methodCalls);
+            } else {
+                StringBuilder elsePath = new StringBuilder(pathSoFar).append(" --> Else");
+                exploreSubStatements(elseBranch, basePath, elsePath, callChain, depth, inLoop, methodCalls);
             }
         }
-        else {
-            makeIfLeafNodesUnited(callControlFlowGraphs, ifStatementNode, lastNodeIndex);
+    }
+
+    private void processForStatement(PsiForStatement forStmt,
+                                     String basePath,
+                                     StringBuilder pathSoFar,
+                                     Deque<PsiMethod> callChain,
+                                     int depth,
+                                     List<String> methodCalls) {
+        PsiExpression condition = forStmt.getCondition();
+        String conditionText = (condition == null) ? "For (?)" : ("For (" + condition.getText() + ")");
+        StringBuilder forPath = new StringBuilder(pathSoFar).append(" --> ").append(conditionText);
+
+        PsiStatement body = forStmt.getBody();
+        if (body != null) {
+            exploreSubStatements(body, basePath, forPath, callChain, depth, true, methodCalls);
         }
+        methodCalls.add(forPath.toString() + " --> (exit for)");
     }
 
-    private void makeIfLeafNodesUnited(List<Node> callControlFlowGraphs, Node ifStatementNode, int lastNodeIndex) {
-        List<Node> unitedFathers = new ArrayList<>();
-        List<Node> childlessMethodNodes = ifStatementNode.getChildlessNodes(Node.NodeTypes.METHOD);
-        List<Node> childlessConditionNodes = ifStatementNode.getChildlessNodes(Node.NodeTypes.CONDITION);
-        List<Node> singleChildConditionNodes = ifStatementNode.getSingleChildNodes(Node.NodeTypes.CONDITION);
+    private void processWhileStatement(PsiWhileStatement whileStmt,
+                                       String basePath,
+                                       StringBuilder pathSoFar,
+                                       Deque<PsiMethod> callChain,
+                                       int depth,
+                                       List<String> methodCalls) {
+        PsiExpression condition = whileStmt.getCondition();
+        String conditionText = (condition == null) ? "While (?)" : ("While (" + condition.getText() + ")");
+        StringBuilder whilePath = new StringBuilder(pathSoFar).append(" --> ").append(conditionText);
 
-        unitedFathers.addAll(childlessMethodNodes);
-        unitedFathers.addAll(childlessConditionNodes);
-        unitedFathers.addAll(singleChildConditionNodes);
-
-        callControlFlowGraphs.get(lastNodeIndex).setUnitedFathers(unitedFathers);
+        PsiStatement body = whileStmt.getBody();
+        if (body != null) {
+            exploreSubStatements(body, basePath, whilePath, callChain, depth, true, methodCalls);
+        }
+        methodCalls.add(whilePath.toString() + " --> (exit while)");
     }
 
-    private void processWhileStatement(PsiWhileStatement whileStatement, PsiMethod method, String basePath, List<Node> callControlFlowGraphs) {
-        // Get the body of the while statement
-        PsiStatement thenBranch = whileStatement.getBody();
-        assert thenBranch != null;
-
-        String condition = Objects.requireNonNull(whileStatement.getCondition()).getText();
-        Node whileStatementNode = new Node(condition, Node.NodeTypes.LOOP);
-        addNodeToGraph(callControlFlowGraphs, whileStatementNode);
-
-        Node exitPointOfWhileStatementNode = new Node("Loop Exit", Node.NodeTypes.LOOP_EXIT);
-
-        whileStatementNode.addChild(exitPointOfWhileStatementNode);
-
-        Iterable<PsiStatement> statements = Lists.newArrayList(whileStatement.getBody());
-        statements.forEach(statement -> {
-            controlFlowStatementsIdentifier(statement, basePath, method, callControlFlowGraphs);
-        });
-
-        int lastNodeIndex = callControlFlowGraphs.size() - 1;
-
-        // Add a link from the last node inside the while block to the condition node
-        callControlFlowGraphs.get(lastNodeIndex).addChild(whileStatementNode);
-
-        // Update the last node to be the while statement node
-        callControlFlowGraphs.set(lastNodeIndex, exitPointOfWhileStatementNode);
-    }
-
-    private void processDoWhileStatement(PsiDoWhileStatement doWhileStatement, PsiMethod method, String basePath, List<Node> callControlFlowGraphs) {
-        // Get the body of the do-while statement
-        PsiStatement thenBranch = doWhileStatement.getBody();
-        assert thenBranch != null;
-
-        // Build a call sequence indicating the start of a do-while loop
-        String condition = Objects.requireNonNull(doWhileStatement.getCondition()).getText();
-        Node doWhileStatementNode = new Node(condition, Node.NodeTypes.CONDITION);
-        int lastNodeIndex = callControlFlowGraphs.size()-1;
-
-        Node doBlockNode = new Node("Do Block", Node.NodeTypes.LOOP);
-        
-        addNodeToGraph(callControlFlowGraphs, doBlockNode);
-
-        Node exitPointOfDoWhileStatementNode = new Node("Loop Exit", Node.NodeTypes.LOOP_EXIT);
-
-        PsiCodeBlock block = ((PsiBlockStatement) thenBranch).getCodeBlock();
-
-        for(PsiStatement statement : block.getStatements()){
-            controlFlowStatementsIdentifier(statement, basePath, method, callControlFlowGraphs);
+    private void processDoWhileStatement(PsiDoWhileStatement doWhileStmt,
+                                         String basePath,
+                                         StringBuilder pathSoFar,
+                                         Deque<PsiMethod> callChain,
+                                         int depth,
+                                         List<String> methodCalls) {
+        StringBuilder doPath = new StringBuilder(pathSoFar).append(" --> Do");
+        PsiStatement body = doWhileStmt.getBody();
+        if (body != null) {
+            exploreSubStatements(body, basePath, doPath, callChain, depth, true, methodCalls);
         }
 
-        callControlFlowGraphs.get(lastNodeIndex).addChild(doWhileStatementNode);
-
-        doWhileStatementNode.addChild(doBlockNode);
-
-        doWhileStatementNode.addChild(exitPointOfDoWhileStatementNode);
-
-        callControlFlowGraphs.set(lastNodeIndex, exitPointOfDoWhileStatementNode);
+        PsiExpression condition = doWhileStmt.getCondition();
+        String condText = (condition == null) ? "(?)" : condition.getText();
+        doPath.append(" --> While(").append(condText).append(")");
+        methodCalls.add(doPath.toString() + " --> (exit do-while)");
     }
 
-    private void processSwitchStatement(PsiSwitchStatement switchStatement, PsiMethod method, String basePath, List<Node> callControlFlowGraphs) {
-        // Check if the switch statement has a body (non-empty case blocks)
-        boolean lastCaseHadBreak = false;
-        
-        int lastNodeIndex = callControlFlowGraphs.size()-1;
-        Node switchStatementNode = new Node("Switch", Node.NodeTypes.SWITCH);
-        
-        addNodeToGraph(callControlFlowGraphs, switchStatementNode);
+    private void processSwitchStatement(PsiSwitchStatement switchStmt,
+                                        String basePath,
+                                        StringBuilder pathSoFar,
+                                        Deque<PsiMethod> callChain,
+                                        int depth,
+                                        List<String> methodCalls) {
+        StringBuilder switchPath = new StringBuilder(pathSoFar).append(" --> Switch");
+        PsiCodeBlock body = switchStmt.getBody();
+        if (body == null) {
+            methodCalls.add(switchPath + " --> (empty switch)");
+            return;
+        }
 
-        Node exitPointOfSwitchStatementNode = new Node("Switch Exit", Node.NodeTypes.SWITCH_EXIT);
-        switchStatementNode.addChild(exitPointOfSwitchStatementNode);
-
-        List<Node> nonBreakNodes = new ArrayList<>();
-
-        Node previousCaseNode = null;
-        if (switchStatement.getBody() != null) {
-            for (PsiStatement innerStatement : switchStatement.getBody().getStatements()) {
-                if (innerStatement instanceof PsiSwitchLabelStatement) {
-                    PsiSwitchLabelStatement switchLabelStatement = (PsiSwitchLabelStatement) innerStatement;
-
-                    if (switchLabelStatement.isDefaultCase()) {
-                        String caseCondition = "Default";
-                        Node caseConditionStatementNode = new Node(caseCondition, Node.NodeTypes.CASE);
-
-                        if (previousCaseNode == null){
-                            callControlFlowGraphs.get(lastNodeIndex).addChild(caseConditionStatementNode);
+        for (PsiStatement st : body.getStatements()) {
+            if (st instanceof PsiSwitchLabelStatement) {
+                PsiSwitchLabelStatement labelStmt = (PsiSwitchLabelStatement) st;
+                if (labelStmt.isDefaultCase()) {
+                    switchPath.append(" --> [default]");
+                } else {
+                    PsiCaseLabelElementList labelList = labelStmt.getCaseLabelElementList();
+                    if (labelList != null) {
+                        StringBuilder labels = new StringBuilder();
+                        for (PsiCaseLabelElement elem : labelList.getElements()) {
+                            if (labels.length() > 0) labels.append("|");
+                            labels.append(elem.getText());
                         }
-                        else {
-                            previousCaseNode.addChild(caseConditionStatementNode);
-                        }
-
-                        previousCaseNode = caseConditionStatementNode;
-
-                        callControlFlowGraphs.set(lastNodeIndex, caseConditionStatementNode);
-                    } else {
-                        
-                        for (PsiCaseLabelElement caseLabelElement : Objects.requireNonNull(switchLabelStatement.getCaseLabelElementList()).getElements()) {
-
-                            String caseCondition = caseLabelElement.getText();
-                            Node caseConditionStatementNode = new Node(caseCondition, Node.NodeTypes.CASE);
-
-                            if (previousCaseNode == null){
-                                switchStatementNode.addChild(caseConditionStatementNode);
-                            }
-                            else {
-
-                                if (lastCaseHadBreak) {
-                                    lastCaseHadBreak = false;
-                                    if (nonBreakNodes.isEmpty()) {
-                                        switchStatementNode.addChild(caseConditionStatementNode);
-                                    } else {
-                                        Node mostLastNonBreakNode = nonBreakNodes.get(nonBreakNodes.size() - 1);
-                                        mostLastNonBreakNode.addChild(caseConditionStatementNode);
-
-                                        switchStatementNode.addChild(caseConditionStatementNode);
-                                    }
-                                } else {
-                                    nonBreakNodes.add(previousCaseNode);
-
-                                    switchStatementNode.addChild(caseConditionStatementNode);
-
-                                    Node mostLastNonBreakNode = nonBreakNodes.get(nonBreakNodes.size() - 1);
-                                    mostLastNonBreakNode.addChild(caseConditionStatementNode);
-                                }
-                            }
-
-                            previousCaseNode = caseConditionStatementNode;
-
-                            callControlFlowGraphs.set(lastNodeIndex, caseConditionStatementNode);
-                        }
+                        switchPath.append(" --> [case: ").append(labels).append("]");
                     }
                 }
-                else {
-                    controlFlowStatementsIdentifier(innerStatement, basePath, method, callControlFlowGraphs);
-                }
-
-                if(getStatementType(innerStatement).equals("Break")){
-                    lastCaseHadBreak = true;
-                }
+            } else {
+                exploreStatement(st, basePath, new StringBuilder(switchPath),
+                        callChain, depth, false, methodCalls);
             }
         }
-        
-        // break statements are connected to the exitPointOfSwitchStatementNode automatically using processBreakStatements function
-        callControlFlowGraphs.get(lastNodeIndex).addChild(exitPointOfSwitchStatementNode);
-
-        // if there wasn't a default case, one case would have exactly one child until this step. The next child should be the exit node of
-        // the switch node. So we will find it and add the exit node as its child. The result would have either 1 or 0 nodes.
-        List<Node> singleChildCaseNodesList = switchStatementNode.getSingleChildNodes(Node.NodeTypes.CASE);
-        if(!singleChildCaseNodesList.isEmpty()){
-            Node lastCaseWhereNoDefaultCaseExits = singleChildCaseNodesList.get(0);
-            lastCaseWhereNoDefaultCaseExits.addChild(exitPointOfSwitchStatementNode);
-        }
-
-        callControlFlowGraphs.set(lastNodeIndex, exitPointOfSwitchStatementNode);
+        methodCalls.add(switchPath.toString() + " --> (exit switch)");
     }
 
-    private void processTryStatement(PsiTryStatement tryStatement, PsiMethod method, String basePath, List<Node> callControlFlowGraphs) {
-        // Get the try block of the try statement
-        PsiCodeBlock tryBlock = tryStatement.getTryBlock();
-        assert tryBlock != null;
-
-        int lastNodeIndex = callControlFlowGraphs.size()-1;
-
-        String condition = "Try Block";
-        Node tryStatementNode = new Node(condition, Node.NodeTypes.TRY);
-
-        Node parentNode = callControlFlowGraphs.get(lastNodeIndex);
-
-        addNodeToGraph(callControlFlowGraphs, tryStatementNode);
-
-        // Iterate through statements in the try block and identify control flow statements
-        for (PsiStatement tryStatementInner : PsiTreeUtil.findChildrenOfType(tryBlock, PsiStatement.class)) {
-            controlFlowStatementsIdentifier(tryStatementInner, basePath, method, callControlFlowGraphs);
-        }
-
-        Node lastTryNode = callControlFlowGraphs.get(lastNodeIndex);
-
-        String catchCondition = "Catch Block";
-        Node catchStatementNode = new Node(catchCondition, Node.NodeTypes.CATCH);
-        
-        parentNode.addChild(catchStatementNode);
-        callControlFlowGraphs.set(lastNodeIndex, catchStatementNode);
-
-        // Get catch blocks from the try statement
-        PsiCodeBlock[] catchBlocks = tryStatement.getCatchBlocks();
-        for (PsiCodeBlock catchBlock : catchBlocks) {
-            for(PsiStatement statement : catchBlock.getStatements()){
-                controlFlowStatementsIdentifier(statement, basePath, method, callControlFlowGraphs);
+    private void processTryStatement(PsiTryStatement tryStmt,
+                                     String basePath,
+                                     StringBuilder pathSoFar,
+                                     Deque<PsiMethod> callChain,
+                                     int depth,
+                                     boolean inLoop,
+                                     List<String> methodCalls) {
+        StringBuilder tryPath = new StringBuilder(pathSoFar).append(" --> TryBlock");
+        PsiCodeBlock tryBlock = tryStmt.getTryBlock();
+        if (tryBlock != null) {
+            for (PsiStatement s : tryBlock.getStatements()) {
+                exploreStatement(s, basePath, new StringBuilder(tryPath),
+                        callChain, depth, inLoop, methodCalls);
             }
         }
 
-        Node lastCatchNode = callControlFlowGraphs.get(lastNodeIndex);
+        // Catch sections
+        for (PsiCatchSection c : tryStmt.getCatchSections()) {
+            StringBuilder catchPath = new StringBuilder(pathSoFar).append(" --> Catch(");
+            PsiParameter param = c.getParameter();
+            if (param != null) {
+                catchPath.append(param.getType().getCanonicalText());
+            }
+            catchPath.append(")");
 
-        // Get the finally block from the try statement
-        PsiCodeBlock finallyBlock = tryStatement.getFinallyBlock();
+            PsiCodeBlock catchBlock = c.getCatchBlock();
+            if (catchBlock != null) {
+                for (PsiStatement s : catchBlock.getStatements()) {
+                    exploreStatement(s, basePath, new StringBuilder(catchPath),
+                            callChain, depth, inLoop, methodCalls);
+                }
+            }
+        }
+
+        // Finally block
+        PsiCodeBlock finallyBlock = tryStmt.getFinallyBlock();
         if (finallyBlock != null) {
-            String finallyCoName = "Finally Block";
-            Node finallyStatementNode = new Node(finallyCoName, Node.NodeTypes.FINALLY);
-
-            lastTryNode.addChild(finallyStatementNode);
-            lastCatchNode.addChild(finallyStatementNode);
-
-            callControlFlowGraphs.set(lastNodeIndex, finallyStatementNode);
-
-            for (PsiStatement finallyStatement : PsiTreeUtil.findChildrenOfType(finallyBlock, PsiStatement.class)) {
-                // Recursively analyze control flow statements within the finally block
-                controlFlowStatementsIdentifier(finallyStatement, basePath, method, callControlFlowGraphs);
+            StringBuilder finallyPath = new StringBuilder(pathSoFar).append(" --> Finally");
+            for (PsiStatement s : finallyBlock.getStatements()) {
+                exploreStatement(s, basePath, new StringBuilder(finallyPath),
+                        callChain, depth, inLoop, methodCalls);
             }
         }
-        else {
-            List<Node> unitedFathers = new ArrayList<>();
-            unitedFathers.add(lastTryNode);
-            unitedFathers.add(lastCatchNode);
+        methodCalls.add(pathSoFar.toString() + " --> (end try)");
+    }
 
-            lastCatchNode.setUnitedFathers(unitedFathers);
-            lastTryNode.setUnitedFathers(unitedFathers);
+    /** Process a method call, handling recursion or multi-function cycles. */
+    private void processMethodCall(PsiExpressionStatement exprStmt,
+                                   String basePath,
+                                   StringBuilder pathSoFar,
+                                   Deque<PsiMethod> callChain,
+                                   int depth,
+                                   boolean inLoop,
+                                   List<String> methodCalls) {
+        PsiMethodCallExpression callExpr = (PsiMethodCallExpression) exprStmt.getExpression();
+        PsiMethod resolved = callExpr.resolveMethod();
+        if (resolved == null) {
+            pathSoFar.append(" --> [UnresolvedCall]");
+            methodCalls.add(pathSoFar.toString());
+            return;
+        }
+
+        // If not in same project path, just record
+        PsiFile containingFile = resolved.getContainingFile();
+        if (containingFile == null
+                || containingFile.getVirtualFile() == null
+                || !containingFile.getVirtualFile().getPath().startsWith(basePath)) {
+            pathSoFar.append(" --> ").append(resolved.getName()).append(" (external)");
+            methodCalls.add(pathSoFar.toString());
+            return;
+        }
+
+        // Check for recursion or multi-method cycle
+        if (callChain.contains(resolved)) {
+            pathSoFar.append(" --> ").append(resolved.getName()).append(" (loop/cycle!)");
+            if (depth < MAX_DEPTH) {
+                expandMethodBody(resolved, basePath, pathSoFar, callChain, depth, inLoop, methodCalls);
+            } else {
+                methodCalls.add(pathSoFar.toString() + " (stopped expansion)");
+            }
+        } else {
+            pathSoFar.append(" --> ").append(resolved.getName());
+            expandMethodBody(resolved, basePath, pathSoFar, callChain, depth, inLoop, methodCalls);
         }
     }
 
-    private void processMethodStatement(PsiExpressionStatement callControlFlowGraphStatement, String basePath, List<Node> callControlFlowGraphs) {
-        // Resolve the method called in the expression
-        PsiMethod resolvedMethod = ((PsiMethodCallExpression) callControlFlowGraphStatement.getExpression()).resolveMethod();
+    /** Process an assignment statement. If RHS is a method call, we expand it similarly to a method call. */
+    private void processAssignmentStatement(PsiExpressionStatement exprStmt,
+                                            String basePath,
+                                            StringBuilder pathSoFar,
+                                            Deque<PsiMethod> callChain,
+                                            int depth,
+                                            boolean inLoop,
+                                            List<String> methodCalls) {
 
-        if (resolvedMethod != null) {
+        PsiExpression expr = exprStmt.getExpression();
+        if (!(expr instanceof PsiAssignmentExpression)) {
+            methodCalls.add(pathSoFar.toString() + " --> [Assignment: " + exprStmt.getText() + "]");
+            return;
+        }
 
-            String methodName = resolvedMethod.getName();
-            Node methodNode = new Node(methodName, Node.NodeTypes.METHOD);
-            int lastNodeIndex = callControlFlowGraphs.size()-1;
-            callControlFlowGraphs.get(lastNodeIndex).addChild(methodNode);
+        PsiAssignmentExpression assignExpr = (PsiAssignmentExpression) expr;
+        PsiExpression rhs = assignExpr.getRExpression();
 
-            callControlFlowGraphs.set(lastNodeIndex, methodNode);
+        // If the RHS is a method call, we can treat it similarly to a normal method call
+        if (rhs instanceof PsiMethodCallExpression) {
+            pathSoFar.append(" --> [Assignment with MethodCall: ")
+                    .append(assignExpr.getLExpression().getText())
+                    .append(" = ");
 
-            Node terminalNodeOfTheNestedFunctions = null;
-
-            // Check if the method is within the project's base path
-            if (resolvedMethod.getContainingFile().getVirtualFile().getPath().startsWith(basePath)) {
-                // Analyze the method's body for control flow statements
-                PsiCodeBlock body = resolvedMethod.getBody();
-                if (body != null) {
-
-                    for (PsiStatement statement : body.getStatements()) {
-                        // Recursively analyze control flow statements within the method's body
-                        if(getStatementType(statement).equals("MethodCall")){
-
-                            PsiExpressionStatement innerStatementExpression = (PsiExpressionStatement) statement;
-                            PsiMethod resolvedInnerMethod = ((PsiMethodCallExpression) innerStatementExpression.getExpression()).resolveMethod();
-                            if(resolvedInnerMethod != null){
-                                String innerMethodName = resolvedInnerMethod.getName();
-                                Node innerMethodNode = new Node(innerMethodName, Node.NodeTypes.METHOD);
-
-                                innerMethodNode.setChainPotentialFunctions(methodNode.getChainPotentialFunctions());
-                                innerMethodNode.addToChainPotentialFunctions(innerMethodNode);
-
-                                // if this method-statement will build a loop of methods, points out to the original method node
-                                // which is the first member of the chain. Covers both recursive and multiple functions.
-                                if(innerMethodNode.doesThisExitsInChainPotentialFunctions()){
-                                    terminalNodeOfTheNestedFunctions = innerMethodNode.getTheOriginalFunctionNode();
-
-                                    Node pointerNode = new Node("Pointer", Node.NodeTypes.POINTER);
-                                    Node lastNode = callControlFlowGraphs.get(lastNodeIndex);
-                                    lastNode.addChild(pointerNode);
-
-                                    boolean isItiRecursive = terminalNodeOfTheNestedFunctions == lastNode;
-
-                                    if(isItiRecursive){
-                                        terminalNodeOfTheNestedFunctions.setMethodRecursive(true);
-                                    }
-                                    else {
-                                        terminalNodeOfTheNestedFunctions.setMethodFirstMemberOfMultipleFunctions(true);
-                                    }
-
-                                    pointerNode.addChild(terminalNodeOfTheNestedFunctions);
-
-                                    callControlFlowGraphs.set(lastNodeIndex, pointerNode);
-                                }
-                                else {
-                                    controlFlowStatementsIdentifier(statement, basePath, resolvedMethod, callControlFlowGraphs);
-                                }
-                            }
-                            else {
-                                controlFlowStatementsIdentifier(statement, basePath, resolvedMethod, callControlFlowGraphs);
-                            }
-                        }
-                        else {
-                            controlFlowStatementsIdentifier(statement, basePath, resolvedMethod, callControlFlowGraphs);
-                        }
-                    }
-                }
+            PsiMethodCallExpression callExpr = (PsiMethodCallExpression) rhs;
+            PsiMethod resolved = callExpr.resolveMethod();
+            if (resolved == null) {
+                pathSoFar.append("[UnresolvedCall]]");
+                methodCalls.add(pathSoFar.toString());
+                return;
             }
 
-            Node exitPointMethodNode = new Node(methodName, Node.NodeTypes.METHOD_EXIT);
-            addNodeToGraph(callControlFlowGraphs, exitPointMethodNode);
-
-            if(methodNode.isMethodRecursive() || methodNode.isMethodFirstMemberOfMultipleFunctions()) {
-                Node affiliationPointerNode = new Node("Affiliation Pointer", Node.NodeTypes.POINTER_AFFILIATION);
-                exitPointMethodNode.addChild(affiliationPointerNode);
-
-                Node veryNextStatementOfLatterPartOfTheLastMethod = affiliationPointerNode.getPartner().getChildren().get(0);
-
-                //there will be only two item in the following list, one of them is terminal node and
-                //the other is the 'veryNextStatementOfLatterPartOfTheLastMethod'
-                for(Node child: affiliationPointerNode.getPartner().getChildren()){
-                    if(child!=terminalNodeOfTheNestedFunctions) {
-                        veryNextStatementOfLatterPartOfTheLastMethod = child;
-                    }
-                }
-
-                affiliationPointerNode.addChild(veryNextStatementOfLatterPartOfTheLastMethod);
-                affiliationPointerNode.getPartner().removeChild(veryNextStatementOfLatterPartOfTheLastMethod);
-
-                addNodeToGraph(callControlFlowGraphs, affiliationPointerNode);
+            pathSoFar.append(resolved.getName()).append("]");
+            // Now expand the method if it's in the same project
+            PsiFile containingFile = resolved.getContainingFile();
+            if (containingFile == null
+                    || containingFile.getVirtualFile() == null
+                    || !containingFile.getVirtualFile().getPath().startsWith(basePath)) {
+                // external method
+                methodCalls.add(pathSoFar.toString() + " (external assignment)");
+                return;
             }
+
+            // Check recursion
+            if (callChain.contains(resolved)) {
+                pathSoFar.append("(loop/cycle!)");
+                if (depth < MAX_DEPTH) {
+                    expandMethodBody(resolved, basePath, pathSoFar, callChain, depth, inLoop, methodCalls);
+                } else {
+                    methodCalls.add(pathSoFar.toString() + " (stopped expansion)");
+                }
+            } else {
+                expandMethodBody(resolved, basePath, pathSoFar, callChain, depth, inLoop, methodCalls);
+            }
+        } else {
+            // Just a normal assignment with no method call on RHS
+            pathSoFar.append(" --> [Assignment: ").append(exprStmt.getText()).append("]");
+            methodCalls.add(pathSoFar.toString());
         }
     }
 
-    private void processDeclarationStatement(PsiDeclarationStatement statement, List<Node> callControlFlowGraphs) {
-        // Get the declared elements in the declaration statement
-        PsiElement[] declaredElements = statement.getDeclaredElements();
+    /**
+     * Expand the body of a called method, respecting depth limit.
+     */
+    private void expandMethodBody(PsiMethod method,
+                                  String basePath,
+                                  StringBuilder pathSoFar,
+                                  Deque<PsiMethod> callChain,
+                                  int depth,
+                                  boolean inLoop,
+                                  List<String> methodCalls) {
+        if (depth >= MAX_DEPTH) {
+            methodCalls.add(pathSoFar.toString() + " --> (depth limit reached)");
+            return;
+        }
 
-        // Iterate through the declared elements
-        for (PsiElement declaredElement : declaredElements) {
-            // Check if the declared element is a variable with an initializer
-            if (declaredElement instanceof PsiVariable) {
-                PsiVariable variable = (PsiVariable) declaredElement;
+        callChain.push(method);
+        PsiCodeBlock body = method.getBody();
+        if (body == null) {
+            methodCalls.add(pathSoFar.toString() + " --> (empty method)");
+            callChain.pop();
+            return;
+        }
 
-                // Get the initializer expression
-                PsiExpression initializer = variable.getInitializer();
+        PsiStatement[] statements = body.getStatements();
+        if (statements.length == 0) {
+            methodCalls.add(pathSoFar.toString() + " --> (empty method)");
+        } else {
+            for (PsiStatement st : statements) {
+                exploreStatement(st,
+                        basePath,
+                        new StringBuilder(pathSoFar),
+                        callChain,
+                        depth + 1,
+                        inLoop,
+                        methodCalls);
+            }
+        }
+        callChain.pop();
+    }
 
-                // Check if the initializer is a method call expression
+    /** Handle local variable declarations. */
+    private void processDeclarationStatement(PsiDeclarationStatement decl,
+                                             StringBuilder pathSoFar,
+                                             List<String> methodCalls) {
+        for (PsiElement element : decl.getDeclaredElements()) {
+            if (element instanceof PsiVariable) {
+                PsiVariable var = (PsiVariable) element;
+                PsiExpression initializer = var.getInitializer();
                 if (initializer instanceof PsiMethodCallExpression) {
-                    PsiMethodCallExpression methodCallExpression = (PsiMethodCallExpression) initializer;
-
-                    PsiReferenceExpression methodReference = methodCallExpression.getMethodExpression();
-
-                    String methodName = methodReference.getReferenceName();
-                    Node methodNode = new Node(methodName, Node.NodeTypes.METHOD);
-
-                    addNodeToGraph(callControlFlowGraphs, methodNode);
+                    PsiMethodCallExpression callExpr = (PsiMethodCallExpression) initializer;
+                    String name = callExpr.getMethodExpression().getReferenceName();
+                    methodCalls.add(pathSoFar.toString() + " --> [VarInitCall: " + name + "]");
+                } else {
+                    // Just a normal declaration
+                    methodCalls.add(pathSoFar.toString() + " --> [Declaration: " + decl.getText() + "]");
                 }
             }
         }
     }
 
-    private void processBreakStatement(List<Node> callControlFlowGraphs) {
-        Node breakNode = new Node("Break", Node.NodeTypes.BREAK);
-
-        int lastIndex = callControlFlowGraphs.size()-1;
-        Node lastNode = callControlFlowGraphs.get(lastIndex);
-        lastNode.addChild(breakNode);
-
-        Node exitPointOfMostInnerLoop = breakNode.getExitPointOfMostInnerLoopsOrSwitch();
-
-        if (exitPointOfMostInnerLoop != null) {
-            breakNode.addChild(exitPointOfMostInnerLoop);
-        }
-    }
-
-    private void processContinueStatement(List<Node> callControlFlowGraphs) {
-        Node continueNode = new Node("Continue", Node.NodeTypes.CONTINUE);
-
-        int lastIndex = callControlFlowGraphs.size()-1;
-        Node lastNode = callControlFlowGraphs.get(lastIndex);
-        lastNode.addChild(continueNode);
-
-        Node mostInnerLoop = continueNode.getMostInnerLoop();
-        Node exitPointOfMostInnerLoop = continueNode.getExitPointOfMostInnerLoop();
-        String mostInnerLoopName = exitPointOfMostInnerLoop.getName();
-        boolean isMostInnerLoopAFor = mostInnerLoopName.equals("For Loop Exit Point");
-
-        if (mostInnerLoop != null) {
-            // if the most inner loop is a for statement, the child of the continue node should be the updater node, but since
-            // at this point of the analysis, the plugin don't have easy access to it, the updater will be added as a child of
-            // the continue node using the 'united fathers' concept.
-            if(!isMostInnerLoopAFor) {
-                continueNode.addChild(mostInnerLoop);
+    /**
+     * Explore sub-statements if it's a block, else just single statement.
+     */
+    private void exploreSubStatements(PsiStatement statement,
+                                      String basePath,
+                                      StringBuilder pathSoFar,
+                                      Deque<PsiMethod> callChain,
+                                      int depth,
+                                      boolean inLoop,
+                                      List<String> methodCalls) {
+        if (statement instanceof PsiBlockStatement) {
+            PsiBlockStatement block = (PsiBlockStatement) statement;
+            for (PsiStatement st : block.getCodeBlock().getStatements()) {
+                exploreStatement(st, basePath, new StringBuilder(pathSoFar),
+                        callChain, depth, inLoop, methodCalls);
             }
+        } else {
+            exploreStatement(statement, basePath, pathSoFar,
+                    callChain, depth, inLoop, methodCalls);
         }
     }
 
-    public void addNodeToGraph(List<Node> callControlFlowGraphs, Node newNode){
-        int lastNodeIndex = callControlFlowGraphs.size() - 1;
-        callControlFlowGraphs.get(lastNodeIndex).addChild(newNode);
-        callControlFlowGraphs.set(lastNodeIndex, newNode);
+    /**
+     * Show final results in a dialog.
+     */
+    private void showDialog(Project project, List<String> methodCalls) {
+        String title = "All the Possible Call Sequences (Version A - Capped at depth of 10)";
+        StringBuilder message = new StringBuilder("Number of sequences: ").append(methodCalls.size()).append("\n\n");
+        for (String seq : methodCalls) {
+            message.append(seq).append("\n---------------------\n");
+        }
+        Messages.showMessageDialog(project, message.toString(), title, Messages.getInformationIcon());
     }
 
-    private void showDialog(Project project) {
-        String title = "Information";
-
-        String message = "The Call Control Flow Graphs of the given Android source code has been built." +
-                " Yet, to print them here, a function is needed to print string patterns, representing all sequences that can have" +
-                " infinite cases and print the rest sequences that are certain. The code has been written using OOP, so as the graphs" +
-                " can be changed easily, developers can apply their thoughts and ideas into them with least effort.";
-
-        // Display the dialog
-        Messages.showMessageDialog(project, message, title, Messages.getInformationIcon());
-    }
     @Override
     public void update(AnActionEvent e) {
         Editor editor = e.getData(CommonDataKeys.EDITOR);
         PsiFile psiFile = e.getData(CommonDataKeys.PSI_FILE);
-
         e.getPresentation().setEnabled(editor != null && psiFile != null);
     }
 }
